@@ -22,3 +22,14 @@ pip -r requirements.txt
 python src/train.py
 
 
+## Citation
+If you are interested in our work, feel free to cite:
+```
+@article{wen2024gaprotonet,
+  title={GAProtoNet: A Multi-head Graph Attention-based Prototypical Network for Interpretable Text Classification},
+  author={Wen, Ximing and Tan, Wenjuan and Weber, Rosina O},
+  journal={arXiv preprint arXiv:2409.13312},
+  year={2024}
+}
+```
+
