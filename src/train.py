@@ -10,8 +10,8 @@ from transformers import BertTokenizer,BertConfig
 from transformers import RobertaTokenizer, RobertaModel
 from transformers import XLNetTokenizer, XLNetModel
 from transformers import DistilBertTokenizer, DistilBertModel
-from model import LLM_Baseline, Bert_GraphAttentionPrototype
-from data_set import SacasamDetection,collate_func
+from models.model import LLM_Baseline, LLM_GraphAttentionPrototype
+from datas.data_set import TextClassificationSet,collate_func
 from torch.utils.data import DataLoader,RandomSampler,SequentialSampler
 from transformers import AdamW,get_linear_schedule_with_warmup
 from tqdm import tqdm,trange
@@ -32,7 +32,6 @@ logger=logging.getLogger(__name__)
 
 def train(model,device,tokenizer,args):
     '''
-    调整模型
     :param model:
     :param device:
     :param tokenizer:
@@ -41,9 +40,9 @@ def train(model,device,tokenizer,args):
     '''
     tb_write=SummaryWriter()
     if args.gradient_accumulation_steps<1:
-        raise ValueError('梯度积累参数无效，必须大于等于1')
+        raise ValueError('Gradient accumulation parameter is invalid, it must be greater than or equal to 1.')
     train_batch_size=int(args.train_batch_size/args.gradient_accumulation_steps)
-    train_data=SacasamDetection(tokenizer,args.max_len,args.data_dir,"train_sacasam_detection",path_file=args.train_file_path)
+    train_data=TextClassificationSet(tokenizer,args.max_len,args.data_dir,"train",path_file=args.train_file_path)
     train_sampler=RandomSampler(train_data)
     train_data_loader=DataLoader(train_data,
                                  sampler=train_sampler,
@@ -51,11 +50,11 @@ def train(model,device,tokenizer,args):
                                  collate_fn=collate_func)
     total_steps=int(len(train_data_loader)*args.num_train_epochs/args.gradient_accumulation_steps)
 
-    dev_data=SacasamDetection(tokenizer,args.max_len,args.data_dir,"dev_sacasam_detection",path_file=args.dev_file_path)
+    dev_data=TextClassificationSet(tokenizer,args.max_len,args.data_dir,"dev",path_file=args.dev_file_path)
     # test_data = SacasamDetection(tokenizer, args.max_len, args.data_dir, "test_sacasam_detection",path_file=args.test_file_path)
-    logging.info("总训练步数为：{}".format(total_steps))
+    logging.info("The total number of training steps is:{}".format(total_steps))
     model.to(device)
-    #获取模型所有参数，选择不想权重衰减的参数
+    # Get all model parameters and select the ones for which weight decay is not desired
     param_optimizer=list(model.named_parameters())
     no_decay=["bias","LayerNorm.bias","LayerNorm.weight"]
     optimizer_grouped_parameters=[
@@ -64,7 +63,7 @@ def train(model,device,tokenizer,args):
         {'params':[p for n,p in param_optimizer if any(nd in n for nd in no_decay)],
          'weight':0.0}
     ]
-    #设置优化器
+    # Set the optimizer
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate,eps=args.adam_epsilon)
     #optimizer=AdamW(optimizer_grouped_parameters,lr=args.learning_rate,eps=args.adam_epsilon)
     # unfreeze_layers = ['cls.']
@@ -74,17 +73,17 @@ def train(model,device,tokenizer,args):
     #         if ele in name:
     #             param.requires_grad = True
     #             break
-    # # 验证一下
+   # Validate
     # for name, param in model.named_parameters():
     #     if param.requires_grad:
     #         print(name, param.size())
-    # 过滤掉requires_grad = False的参数
+    # Filter out parameters with requires_grad = False
     # optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.00001)
     schedular=get_linear_schedule_with_warmup(optimizer,
                                               num_warmup_steps=int(args.warmup_proportion*total_steps),
                                           num_training_steps=total_steps)
     ce_loss = CrossEntropyLoss()
-    #清空cuda缓存
+    # Clear CUDA cache
     torch.cuda.empty_cache()
     model.train()
     tr_loss,logging_loss=0.0,0.0
@@ -107,12 +106,12 @@ def train(model,device,tokenizer,args):
             loss=ce_loss(outputs,labels) + args.prototype_loss_weights['diversity_loss_p_p']*model.prototype_layer.diversity_loss_p_p()
             tr_loss+=loss.item()
             iter_bar.set_description("Iter (loss=%5.3f)"%loss.item())
-            #判断是否进行梯度积累，如果进行，则将损失值除以累积步数，每隔多少步更新一次参数
+            # Check if gradient accumulation is applied. If so, divide the loss by the accumulation steps and update parameters every few steps.
             if args.gradient_accumulation_steps>1:
                 loss=loss/args.gradient_accumulation_steps
             loss.backward()
             torch.nn.utils.clip_grad_norm(model.parameters(),args.max_grad_norm)
-            #如果步数整除累计步数，进行参数优化
+            # If the step number is divisible by the accumulation steps, perform parameter optimization.
             if (step+1)%args.gradient_accumulation_steps==0:
                 optimizer.step()
                 schedular.step()
@@ -124,9 +123,9 @@ def train(model,device,tokenizer,args):
                     logging_loss=tr_loss
         
         global_step+=1
-        #如果步数整除save_model_steps，保存训练好的模型
+        # If the step number is divisible by save_model_steps, save the trained model.
         if args.save_model_steps>0 and global_step%args.save_model_steps==0:
-            eval_acc,json_data=evaluate(model,device,dev_data,args)
+            eval_acc,f1,precision,recall,json_data=evaluate(model,device,dev_data,args)
             model.train()
             logger.info("dev_acc:{}".format(eval_acc))
             tb_write.add_scalar("dev_acc",eval_acc,global_step)
@@ -154,7 +153,7 @@ def train(model,device,tokenizer,args):
                 torch.save(model, os.path.join(args.best_model_dir,"best_model_xlnet_hotel_multihead_pro20.pth"))
                 best_acc = eval_acc
         torch.cuda.empty_cache()
-    eval_acc,json_data=evaluate(model,device,dev_data,args)
+    eval_acc,f1,precision,recall,json_data=evaluate(model,device,dev_data,args)
     logger.info("dev_acc:{}".format(eval_acc))
     tb_write.add_scalar("dev_acc",eval_acc,global_step)
     output_dir=os.path.join(args.output_dir,"checkpoint-{}".format(global_step))
@@ -181,7 +180,6 @@ def train(model,device,tokenizer,args):
 
 def evaluate(model,device,dev_data,args):
     '''
-    对验证集数据进行模型测试
     :param model:
     :param device:
     :param dev_data:
@@ -231,57 +229,56 @@ def evaluate(model,device,dev_data,args):
     return eval_acc,f1,precision,recall,json_data
 
 def set_args():
-    parser=argparse.ArgumentParser()#创建一个解析器
-    # 训练参数
-    parser.add_argument('--device',default='0',type=str,help='设置训练或测试时使用的显卡')
-    # parser.add_argument('--train_file_path',default='./SemEval2022/train/train.En.csv',type=str,help='训练数据')
-    # parser.add_argument('--dev_file_path', default='./SemEval2022/dev/dev.En.csv', type=str, help='验证数据')
-    # parser.add_argument('--test_file_path', default='./SemEval2022/test/task_A_En_test.csv', type=str, help='测试数据')
-    parser.add_argument('--train_file_path',default="/root/autodl-fs/hotel/train_data.csv",type=str,help='训练数据')
-    parser.add_argument('--dev_file_path', default="/root/autodl-fs/hotel/test_data.csv", type=str, help='验证数据')
-    # parser.add_argument('--test_file_path', default='./SemEval2022/test/task_A_En_test.csv', type=str, help='测试数据')
-    parser.add_argument('--data_dir', default='./cached/', type=str, help='缓存数据的存放路径')
-    parser.add_argument('--num_train_epochs', default=100, type=int, help='模型训练的轮数')
-    parser.add_argument('--train_batch_size', default=256, type=int, help='训练时每个batch的大小')
-    parser.add_argument('--test_batch_size', default=64, type=int, help='测试时每个batch的大小')
-    parser.add_argument('--learning_rate', default=1e-4, type=float, help='学习率')
-    parser.add_argument('--warmup_proportion', default=0.1, type=float, help='warmup概率，即训练总补偿的百分之多少，进行warmup')
-    parser.add_argument('--adam_epsilon', default=1e-8, type=float, help='Adam优化器的epsilon值')
-    parser.add_argument('--save_model_steps', default=5, type=int, help='保存训练模型步数')
-    parser.add_argument('--logging_steps', default=300, type=int, help='保存训练日志的步数')
-    parser.add_argument('--gradient_accumulation_steps', default=64, type=int, help='梯度积累')
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--device',default='0',type=str,help='Set the GPU to be used during training or testing.')
+    # parser.add_argument('--train_file_path',default='./SemEval2022/train/train.En.csv',type=str,help='Training data')
+    # parser.add_argument('--dev_file_path', default='./SemEval2022/dev/dev.En.csv', type=str, help='Validation data')
+    # parser.add_argument('--test_file_path', default='./SemEval2022/test/task_A_En_test.csv', type=str, help='Testing data')
+    parser.add_argument('--train_file_path',default="/root/autodl-fs/hotel/train_data.csv",type=str,help='Training data')
+    parser.add_argument('--dev_file_path', default="/root/autodl-fs/hotel/test_data.csv", type=str, help='Validation data')
+    # parser.add_argument('--test_file_path', default='./SemEval2022/test/task_A_En_test.csv', type=str, help='Testing data')
+    parser.add_argument('--data_dir', default='./cached/', type=str, help='Path to store cached data')
+    parser.add_argument('--num_train_epochs', default=100, type=int, help='Number of epochs for model training')
+    parser.add_argument('--train_batch_size', default=256, type=int, help='Batch size for each training step')
+    parser.add_argument('--test_batch_size', default=64, type=int, help='Batch size for each testing step')
+    parser.add_argument('--learning_rate', default=1e-4, type=float, help='Learning rate')
+    parser.add_argument('--warmup_proportion', default=0.1, type=float, help='Warmup ratio, i.e., the percentage of the total training steps used for warmup.')
+    parser.add_argument('--adam_epsilon', default=1e-8, type=float, help='The epsilon value of the Adam optimizer.')
+    parser.add_argument('--save_model_steps', default=5, type=int, help='The number of steps to save the trained model.')
+    parser.add_argument('--logging_steps', default=300, type=int, help='The number of steps after which to save the training logs.')
+    parser.add_argument('--gradient_accumulation_steps', default=64, type=int, help='Gradient accumulation')
     parser.add_argument('--max_grad_norm', default=1.0, type=float, help='')
-    parser.add_argument('--output_dir', default='baselinep/', type=str, help='模型输出路径')
-    parser.add_argument('--best_model_dir', default='/root/autodl-fs/model', type=str, help='最佳模型输出路径')
-    parser.add_argument('--seed', default=2022, type=int, help='随机种子')
-    parser.add_argument('--max_len', default=512, type=int, help='输入模型的文本的最大长度')
+    parser.add_argument('--output_dir', default='baselinep/', type=str, help='Model output path')
+    parser.add_argument('--best_model_dir', default='/root/autodl-fs/model', type=str, help='Best model output path')
+    parser.add_argument('--seed', default=2022, type=int, help='Random seed')
+    parser.add_argument('--max_len', default=512, type=int, help='Maximum length of the input text for the model')
     
     # 模型参数
-    parser.add_argument('--bert_model_path', default='/root/autodl-fs/xlnet/', type=str, help='预训练模型路径')
-    parser.add_argument('--bert_config', default='/root/autodl-fs/xlnet/config.json', type=str, help='预训练模型配置文件')
-    parser.add_argument('--llm_model_path', default='./root/autodl-fs/xlnet/model.pt', type=str, help='预训练模型路径')
-    parser.add_argument('--frozen_layers', default=16, type=int, help='预训练模型冻结层数')
-    parser.add_argument('--vocab_path', default='/root/autodl-fs/xlnet/vocab.json', type=str, help='预训练模型字典数据')
-    parser.add_argument('--merge_path', default='/root/autodl-fs/xlnet/merges.txt', type=str, help='预训练模型merge文件')
-    parser.add_argument('--tokenizer_path', default='/root/autodl-fs/xlnet/tokenizer.json', type=str, help='预训练模型tokenizer文件')
-    parser.add_argument('--tokenizer_config', default='/root/autodl-fs/xlnet/tokenizer_config.json', type=str, help='预训练模型tokenizer配置文件')
-    parser.add_argument('--bert_cls_dim', default=1024, type=int, help='BERT模型的输出维度')
-    parser.add_argument('--prototype_dim', default=1024, type=int, help='BERT模型的输出维度')
+    parser.add_argument('--bert_model_path', default='/root/autodl-fs/xlnet/', type=str, help='Path to the pretrained model')
+    parser.add_argument('--bert_config', default='/root/autodl-fs/xlnet/config.json', type=str, help='Pretrained model configuration file')
+    parser.add_argument('--llm_model_path', default='./root/autodl-fs/xlnet/model.pt', type=str, help='Pretrained model path')
+    parser.add_argument('--frozen_layers', default=16, type=int, help='Number of frozen layers in the pretrained model')
+    parser.add_argument('--vocab_path', default='/root/autodl-fs/xlnet/vocab.json', type=str, help='Pretrained model vocabulary data')
+    parser.add_argument('--merge_path', default='/root/autodl-fs/xlnet/merges.txt', type=str, help='Pretrained model merge file')
+    parser.add_argument('--tokenizer_path', default='/root/autodl-fs/xlnet/tokenizer.json', type=str, help='Pretrained model tokenizer file')
+    parser.add_argument('--tokenizer_config', default='/root/autodl-fs/xlnet/tokenizer_config.json', type=str, help='Pretrained model tokenizer configuration file')
+    parser.add_argument('--bert_cls_dim', default=1024, type=int, help='Output dimension of the BERT model')
+    parser.add_argument('--prototype_dim', default=1024, type=int, help='Output dimension of the BERT model')
     parser.add_argument('--attention_dim', default=4096, type=int, help='attention')
-    parser.add_argument('--q_dim', default=2048, type=int, help='原型层的维度')
-    parser.add_argument('--k_dim', default=2048, type=int, help='BERT模型的输出维度')
-    parser.add_argument('--v_dim', default=4096, type=int, help='原型层的维度')
-    parser.add_argument('--num_prototypes', default=20, type=int, help='原型的数量')
-    parser.add_argument('--prototype_threshold', default=0.5, type=float, help='原型阈值')
-    parser.add_argument('--prototype_loss_weights', default='{"diversity_loss_z_p": 0.1, "diversity_loss_p_z": 0.1, "diversity_loss_p_p": 0.0, "loss_num_prototypes": 0.1, "cluster_loss": 0.1, "seperation_loss": 0.1}', type=json.loads, help='原型损失权重字典的字符串表示')
-    parser.add_argument('--transformer_dim', default=256, type=int, help='Transformer层的维度')
-    parser.add_argument('--transformer_layers', default=2, type=int, help='Transformer层的数量')
-    parser.add_argument('--transformer_dropout', default=0.1, type=float, help='Transformer的dropout率')
-    parser.add_argument('--fc_output_dim', default=4096, type=int, help='全连接层的输出维度')
-    parser.add_argument('--mlp_hidden_dim', default=[1024,256,64], type=list, help='MLP的隐藏层维度')
-    parser.add_argument('--mlp_output_dim', default=2, type=int, help='MLP的输出维度')
-    parser.add_argument('--mlp_num_layers', default=2, type=int, help='MLP的层数')
-    parser.add_argument('--mlp_dropout', default=0.1, type=float, help='MLP的dropout率')
+    parser.add_argument('--q_dim', default=2048, type=int, help='Dimension of the prototype layer')
+    parser.add_argument('--k_dim', default=2048, type=int, help='Output dimension of the BERT model')
+    parser.add_argument('--v_dim', default=4096, type=int, help='Dimension of the prototype layer')
+    parser.add_argument('--num_prototypes', default=20, type=int, help='Number of prototypes')
+    parser.add_argument('--prototype_threshold', default=0.5, type=float, help='Prototype threshold')
+    parser.add_argument('--prototype_loss_weights', default='{"diversity_loss_z_p": 0.1, "diversity_loss_p_z": 0.1, "diversity_loss_p_p": 0.0, "loss_num_prototypes": 0.1, "cluster_loss": 0.1, "seperation_loss": 0.1}', type=json.loads, help='String representation of the prototype loss weight dictionary')
+    parser.add_argument('--transformer_dim', default=256, type=int, help='Dimension of the Transformer layer')
+    parser.add_argument('--transformer_layers', default=2, type=int, help='Number of Transformer layers')
+    parser.add_argument('--transformer_dropout', default=0.1, type=float, help='Transformer的dropout rate')
+    parser.add_argument('--fc_output_dim', default=4096, type=int, help='Output dimension of the fully connected layer')
+    parser.add_argument('--mlp_hidden_dim', default=[1024,256,64], type=list, help='Hidden layer dimensions of the MLP')
+    parser.add_argument('--mlp_output_dim', default=2, type=int, help='Output dimension of the MLP')
+    parser.add_argument('--mlp_num_layers', default=2, type=int, help='Number of layers in the MLP')
+    parser.add_argument('--mlp_dropout', default=0.1, type=float, help='Dropout rate of the MLP')
     parser.add_argument("--normalization", default="sparsemax", type=str)
     parser.add_argument("--num_heads", default=1, type=int, help='Graph Attention')
     parser.add_argument("--alpha", default=0.2, type=float, help='Graph Attention LeakyRelu')
@@ -289,7 +286,7 @@ def set_args():
     parser.add_argument("--G_dim", default=32, type=int, help='k')
     parser.add_argument("--gru_hidden_dim", default=512, type=int, help='Gru Hidden Dim')
     parser.add_argument("--gru_num_layer", default=1, type=int, help='Gru Num Layer')
-    return parser.parse_args() #调用parse_args方法解析参数
+    return parser.parse_args() 
 
 def main():
     args=set_args()
@@ -300,7 +297,6 @@ def main():
         torch.manual_seed(args.seed)
         random.seed(args.seed)
         np.random.seed(args.seed)
-    #加载模型的config，重新定义token_type个数
     # model_path='pre_train_model/sci-uncased/pytorch_model.bin'
     # config_path='pre_train_model/sci-uncased/config.json'
     # state_dict=torch.load(model_path,map_location='cpu')
@@ -319,55 +315,51 @@ def main():
     '''
     tokenizer = RobertaTokenizer.from_pretrained( 
         pretrained_model_name_or_path = args.bert_model_path,
-        vocab_file=args.vocab_path,  # 通常不需要直接指定vocab_file，除非tokenizer_config中有特别说明  
-        merges_file=args.merge_path,  # 对于某些tokenizer（如BPE），可能需要指定merges文件  
-        tokenizer_file=args.tokenizer_path,  # 你的tokenizer文件  
-        tokenizer_config_file=args.tokenizer_config,  # 你的tokenizer配置文件  
-        cache_dir=None,  # 可选，指定缓存目录  
-        force_download=False,  # 强制下载，通常不需要  
-        resume_download=False,  # 恢复下载，通常不需要  
-        proxies=None,  # 代理设置，通常不需要  
-        use_fast=True,  # 尝试使用fast tokenizer（如果可用）   
-        )
+        vocab_file=args.vocab_path,  # Usually, there is no need to directly specify the vocab_file unless there is a specific instruction in the tokenizer_config  
+        merges_file=args.merge_path,  # For some tokenizers (like BPE), you may need to specify the merges file  
+        tokenizer_file=args.tokenizer_path,  # Your tokenizer file  
+        tokenizer_config_file=args.tokenizer_config,  # Your tokenizer configuration file  
+        cache_dir=None,  # Optional, specify the cache directory  
+        force_download=False,  # Force download, typically not needed  
+        resume_download=False,  # Resume download, typically not needed  
+        proxies=None,  # Proxy settings, usually not required  
+        use_fast=True,  # Try to use the fast tokenizer (if available)   
+    )
     for i in range(1,100):
-        tokenizer.add_tokens("[uncased{}]".format(i),special_tokens=True)
-    #创建模型的输出目录
+        tokenizer.add_tokens("[uncased{}]".format(i), special_tokens=True)
+    # Create the output directory for the model
     if not os.path.exists(args.output_dir):
         os.mkdir(args.output_dir)
-     '''   
+    '''  
        
     tokenizer = XLNetTokenizer.from_pretrained( 
         pretrained_model_name_or_path = args.bert_model_path ,
-        tokenizer_file=args.tokenizer_path # 你的tokenizer文件     
+        tokenizer_file=args.tokenizer_path    
         )
     for i in range(1,100):
         tokenizer.add_tokens("[uncased{}]".format(i),special_tokens=True)
-    #创建模型的输出目录
     if not os.path.exists(args.output_dir):
         os.mkdir(args.output_dir)
         
     '''
     tokenizer = DistilBertTokenizer.from_pretrained( 
         pretrained_model_name_or_path = args.bert_model_path,
-        vocab_file=args.vocab_path,  # 通常不需要直接指定vocab_file，除非tokenizer_config中有特别说明  
-        #merges_file=args.merge_path,  # 对于某些tokenizer（如BPE），可能需要指定merges文件  
-        tokenizer_file=args.tokenizer_path,  # 你的tokenizer文件  
-        tokenizer_config_file=args.tokenizer_config,  # 你的tokenizer配置文件  
-        cache_dir=None,  # 可选，指定缓存目录  
-        force_download=False,  # 强制下载，通常不需要  
-        resume_download=False,  # 恢复下载，通常不需要  
-        proxies=None,  # 代理设置，通常不需要  
-        use_fast=True,  # 尝试使用fast tokenizer（如果可用）   
-        )
+        vocab_file=args.vocab_path,  # Usually, there is no need to directly specify the vocab_file unless there is a specific instruction in the tokenizer_config  
+        #merges_file=args.merge_path,  # For some tokenizers (like BPE), you may need to specify the merges file  
+        tokenizer_file=args.tokenizer_path,  # Your tokenizer file  
+        tokenizer_config_file=args.tokenizer_config,  # Your tokenizer configuration file  
+        cache_dir=None,  # Optional, specify the cache directory  
+        force_download=False,  # Force download, typically not needed  
+        resume_download=False,  # Resume download, typically not needed  
+        proxies=None,  # Proxy settings, usually not required  
+        use_fast=True,  # Try to use the fast tokenizer (if available)   
+    )
     '''
-    
-    
     '''
     model = LLM_Baseline(args.bert_model_path, args.bert_config, args.frozen_layers, args.bert_cls_dim, args.attention_dim, args.prototype_dim, args.num_prototypes, args.prototype_threshold, args.prototype_loss_weights, args.transformer_dim, args.transformer_layers, args.num_heads, args.transformer_dropout, args.fc_output_dim, args.mlp_hidden_dim, args.mlp_output_dim, args.mlp_num_layers, args.mlp_dropout, args.normalization)
     '''
-    
-    
-    model = Bert_GraphAttentionPrototype(args.bert_model_path, args.bert_config, args.frozen_layers, args.bert_cls_dim, args.attention_dim, args.prototype_dim, args.num_prototypes, args.prototype_threshold, args.prototype_loss_weights, args.transformer_dim, args.transformer_layers, args.num_heads, args.transformer_dropout, args.fc_output_dim, args.mlp_hidden_dim, args.mlp_output_dim, args.mlp_num_layers, args.mlp_dropout, args.normalization,args.k_dim,args.q_dim,args.v_dim)
+       
+    model = LLM_GraphAttentionPrototype(args.bert_model_path, args.bert_config, args.frozen_layers, args.bert_cls_dim, args.attention_dim, args.prototype_dim, args.num_prototypes, args.prototype_threshold, args.prototype_loss_weights, args.transformer_dim, args.transformer_layers, args.num_heads, args.transformer_dropout, args.fc_output_dim, args.mlp_hidden_dim, args.mlp_output_dim, args.mlp_num_layers, args.mlp_dropout, args.normalization,args.k_dim,args.q_dim,args.v_dim)
     
     train(model,device,tokenizer,args)
     
