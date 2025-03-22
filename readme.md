@@ -25,11 +25,12 @@ python src/train.py
 ## Citation
 If you are interested in our work, feel free to cite:
 ```
-@article{wen2024gaprotonet,
+@inproceedings{wen2025gaprotonet,
   title={GAProtoNet: A Multi-head Graph Attention-based Prototypical Network for Interpretable Text Classification},
-  author={Wen, Ximing and Tan, Wenjuan and Weber, Rosina O},
-  journal={arXiv preprint arXiv:2409.13312},
-  year={2024}
+  author={Wen, Ximing and Tan, Wenjuan and Weber, Rosina},
+  booktitle={Proceedings of the 31st International Conference on Computational Linguistics},
+  pages={9891--9901},
+  year={2025}
 }
 ```
 
