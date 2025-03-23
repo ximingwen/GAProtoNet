@@ -1,6 +1,0 @@
-torch @ http://download.pytorch.org/whl/cu118/torch-2.0.0%2Bcu118-cp38-cp38-linux_x86_64.whl
-transformers==4.41.2
-tqdm @ file:///tmp/build/80754af9/tqdm_1625563689033/work
-json5==0.9.11
-numpy==1.24.2
-
