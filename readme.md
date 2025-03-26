@@ -48,15 +48,8 @@ If you are interested in our work, feel free to cite:
 ```
 @inproceedings{wen-etal-2025-gaprotonet,
     title = "{GAP}roto{N}et: A Multi-head Graph Attention-based Prototypical Network for Interpretable Text Classification",
-    author = "Wen, Ximing  and
-      Tan, Wenjuan  and
-      Weber, Rosina",
-    editor = "Rambow, Owen  and
-      Wanner, Leo  and
-      Apidianaki, Marianna  and
-      Al-Khalifa, Hend  and
-      Eugenio, Barbara Di  and
-      Schockaert, Steven",
+    author = "Wen, Ximing and Tan, Wenjuan and Weber, Rosina",
+    editor = "Rambow, Owen and Wanner, Leo and Apidianaki, Marianna and Al-Khalifa, Hend and Eugenio, Barbara Di and Schockaert, Steven",
     booktitle = "Proceedings of the 31st International Conference on Computational Linguistics",
     month = jan,
     year = "2025",
